@@ -1,0 +1,40 @@
+# retail-core 的项目配置。只写检查器读的键（CONTRACT §5）：档次、路径、预算、元信息范围。
+# 其余事实各有唯一位置，这里不复述：命令见 GATES.md「命令」节；栈见 AGENTS.md §0；
+# 环境与数据保留见 docs/architecture/overview.md §6/§7；兼容策略见 docs/architecture/
+# invariants.md INV-07 与 docs/architecture/contracts/README.md 的「兼容策略」列。
+# 采用的标准修订不在本文件，见 governance/STANDARD_VERSION（01 §8）
+tier: L2                                 # 四人团队（Zhao/Li/Zhou/Wang），有闸门、例外登记与 ADR
+
+layout:
+  entry:
+    - AGENTS.md                          # 唯一加载合同在这一份里
+    - CLAUDE.md                          # 只有一行 @AGENTS.md
+  docs_root: docs
+  work_root: docs/state/work             # 一件一文件，WI-<四位序号>-<短名>.md
+  artifacts:                             # 本项目这几件工件的实际落点（01 §3.1 允许按职责合并映射）
+    acceptance: docs/product/acceptance  # 一个领域一份，验收 ID 稳定
+    status: docs/state/STATUS.md
+    playbook: docs/knowledge/PLAYBOOK.md
+    failures: docs/knowledge/FAILURES.md
+    work_current: docs/state/work        # 实时状态源就是工作项目录；STATUS 只索引当前重点
+    handoff: docs/state/handoff
+    work_artifacts: docs/state/artifacts  # 只有 README 进 git，工具返回原文不进
+    decisions: docs/decisions
+    gates: governance/GATES.md
+    # sources / eval / memory / tools/check_*.py 这四件本示例没有实物（代码与 eval 不含在示例里），
+    # 不声明落点：让检查器按候选未命中记未定，而不是指向一个并不承载该职责的文件
+
+budgets:
+  entry_lines: 150                       # F-009 之后定的，AGENTS.md 现在不到 110 行
+  stale_days: 90
+  work_item_stale_days: 5                # in_progress 超 5 天无转换记录，周一巡检转 blocked
+
+metadata_fields:                         # 本项目头部日期字段的两种写法：多数文档写 frontmatter 的 updated_at，ADR 写行内「日期：」
+  - updated_at
+  - 日期
+
+metadata_required:                       # 01 §3.5 六类里本示例有的四类
+  - docs/product/acceptance
+  - docs/architecture
+  - docs/decisions
+  - docs/runbooks
