@@ -4,9 +4,11 @@
 四条判据都只回答"文档说的和仓库里的对不对得上"，不回答"内容对不对"：
 
 1. `future-date`   记录里写成既成事实的日期，晚于写下它的那次提交（基准取 `git blame` 行级提交时间）。
-2. `adr-revision`  ADR 正文里出现就地修订的标记（02 §8「ADR 不就地修订」）。
+2. `adr-revision`  ADR 正文里出现就地修订的标记（02 §8「ADR 不就地修订」）；围栏代码块不看，
+   英文标记只认标题/标签形态，「修订后」开头的指代句不算。
 3. `adr-index-*`   ADR 索引与目录里实物的双向对账（02 §8「decisions/README.md 是索引」）。
-4. `work-item-missing` STATUS 声明的工作项没有对应文件（01 §4.1 每个状态都要求工作项工件）。
+4. `work-item-missing` STATUS 声明的工作项没有对应文件（01 §4.1 每个状态都要求工作项工件）；
+   状态源可以是一份文件，也可以是一个目录（一件一文件，ID 取其直接一层的 *.md）。
 
 三态取向（01 §2 N1 与契约 §1.1）：前两条的召回靠两份**工具常量词表**，是猜测，**永不 FAIL**；
 第 4 条的 `WI-\\d{3,}` 同属工具约定，也永不 FAIL。只有第 3 条的反向对账（目录里有实物、
@@ -60,6 +62,11 @@ _PLAN_WINDOW = 6
 # （`- 只追加地保存原始记录…`、`- 与现有理论：修订 D-027…`），那是实测出来的误报形态。
 _REVISION_MARKERS = (u"修订", u"变更记录", u"补充", u"更新于", u"追加", u"修改记录",
                      u"版本历史", u"revision", u"changelog")
+# 以标记词开头却是指代句（「修订后的结论见 §13.1」），不是修订块——采用项目实测误报。
+_REVISION_NOT = (u"修订后",)
+# 英文标记常作普通名词（`revision id "0053_x"`），只在标题或标签形态才算：
+# `#` 标题行，或去装饰后该词后面紧跟 `:`／`：`／表格竖线／行尾。
+_REVISION_LABEL_ONLY = (u"revision", u"changelog")
 _LEAD_TRIM = u" \t　>#-*|"      # 行首装饰：引用、标题、列表、加粗、表格竖线
 
 _INDEX_NAMES = ("README.md", "INDEX.md")
@@ -72,6 +79,8 @@ _WI_RE = re.compile(r"\bWI-\d{3,}\b")
 _ADR_RE = re.compile(r"ADR-\d+")
 _ADR_FILE_RE = re.compile(r"^(ADR-\d+)")
 _BLAME_HEAD = re.compile(r"^([0-9a-f]{40})\s+(\d+)\s+(\d+)(?:\s+(\d+))?$")
+# CommonMark 围栏：同一字符连续 3 个以上；闭合须同字符、不短于开围栏、其后只有空白。
+_FENCE_RE = re.compile(u"^(`{3,}|~{3,})(.*)$")
 _MD_LINK_RE = re.compile(r"\]\(([^)]+)\)")
 _ZERO_SHA = "0" * 40
 
@@ -325,14 +334,31 @@ def _adr_dir(cfg, root, files, docs_root):
 # --------------------------------------------------------------------------
 
 def _revision_hits(text):
-    out = []
+    out, fence = [], None
     for n, line in enumerate(text.splitlines(), 1):
+        bare = line.lstrip(u" \t　>")
+        fm = _FENCE_RE.match(bare)
+        if fence:                           # 围栏代码块里的行是样例，不是正文
+            if (fm and fm.group(1)[0] == fence[0] and len(fm.group(1)) >= len(fence)
+                    and not fm.group(2).strip()):
+                fence = None
+            continue
+        if fm and not (fm.group(1)[0] == u"`" and u"`" in fm.group(2)):   # ```x``` 是行内代码
+            fence = fm.group(1)
+            continue
         s = line.lstrip(_LEAD_TRIM)
         low = s.lower()
+        if low.startswith(_REVISION_NOT):
+            continue
         for mark in _REVISION_MARKERS:
-            if low.startswith(mark.lower()):
-                out.append((n, s[:40], mark))
-                break
+            if not low.startswith(mark):
+                continue
+            rest = s[len(mark):].lstrip(u"* \t").rstrip()
+            if (mark in _REVISION_LABEL_ONLY and not bare.startswith(u"#")
+                    and rest and rest[0] not in u":：|"):
+                continue
+            out.append((n, s[:40], mark))
+            break
     return out
 
 
@@ -478,12 +504,13 @@ def _check_index(root, adr_dir, adr_files, index_rel, declared):
 def _check_work_items(cfg, root, files):
     declared = cfg_get(cfg, "layout.artifacts.status")
     if declared:
-        status_rel = _norm_rel(declared)
-        if not os.path.isfile(os.path.join(root, status_rel)):
+        status_rel = _norm_rel(declared).rstrip("/")
+        status_path = os.path.join(root, status_rel)
+        if not (os.path.isfile(status_path) or os.path.isdir(status_path)):
             return [finding(
                 NAME, UNDETERMINED, u"状态文件不存在：%s" % status_rel, where=status_rel,
                 kind="status-missing", key=status_rel,
-                reason=u"layout.artifacts.status 声明了它，但文件不在；"
+                reason=u"layout.artifacts.status 声明了它，但文件与目录都不在；"
                        u"是配置过期还是文件被移走，本工具判不了",
                 why=u"01 §4.1 的工作项以 STATUS 的声明为入口，入口不在则判不了")]
     else:
@@ -499,15 +526,20 @@ def _check_work_items(cfg, root, files):
                        u"本工具不猜状态文件叫什么" % u" / ".join(_STATUS_CANDIDATES),
                 why=u"01 §4.1 以工作项为对象；契约 §1.1：候选路径是约定，猜不到不记通过")]
 
-    try:
-        text = read_text(os.path.join(root, status_rel))
-    except OSError as exc:
-        return [undetermined_from_exception(NAME, exc, u"读 %s" % status_rel)]
-
+    # 状态源是目录（一件一文件即状态源）时，ID 取它直接一层的 *.md，不递归。
+    if os.path.isdir(os.path.join(root, status_rel)):
+        sources = [f for f in files if f.lower().endswith(".md") and os.path.dirname(f) == status_rel]
+    else:
+        sources = [status_rel]
     seen = {}
-    for n, line in enumerate(text.splitlines(), 1):
-        for m in _WI_RE.finditer(line):
-            seen.setdefault(m.group(0), n)
+    for src in sources:
+        try:
+            text = read_text(os.path.join(root, src))
+        except OSError as exc:
+            return [undetermined_from_exception(NAME, exc, u"读 %s" % src)]
+        for n, line in enumerate(text.splitlines(), 1):
+            for m in _WI_RE.finditer(line):
+                seen.setdefault(m.group(0), u"%s:%d" % (src, n))
     if not seen:                       # 一个 ID 都没有：无结论，不产条目
         return []
 
@@ -528,7 +560,7 @@ def _check_work_items(cfg, root, files):
     for wid in sorted(set(seen) - have):
         out.append(finding(
             NAME, UNDETERMINED, u"%s 在 %s 里声明了，%s 下没有它的文件" % (wid, status_rel, work_root),
-            where=u"%s:%d" % (status_rel, seen[wid]),
+            where=seen[wid],
             kind="work-item-missing", key=wid,
             reason=u"%s 下没有文件名以 %s 开头的工件；是还没建、建在别处，还是这个 ID 只是"
                    u"正文里提了一句，本工具判不了。ID 形态 WI-<三位以上数字> 是工具约定"
@@ -561,12 +593,15 @@ def scope(cfg):
             u"且左侧 %d 字内不带计划词的那些日期，是否晚于该行 `git blame` 的提交日"
             % (docs_root or u"（未配置）", _ACT_WINDOW, _PLAN_WINDOW),
             u"ADR 目录（layout.artifacts.decisions，当前 %r；未声明则在 docs_root 内找名为 "
-            u"decisions 的目录）里除索引外、不在 frozen 内的 *.md：行首是否以就地修订标记词开头"
+            u"decisions 的目录）里除索引外、不在 frozen 内的 *.md：围栏代码块之外的行首是否以就地修订"
+            u"标记词开头（围栏按 CommonMark 开闭；英文 revision/changelog 只认 `#` 标题或后跟冒号/表格竖线/行尾的标签形态；"
+            u"「修订后」开头的指代句不算）"
             % (decisions or u"（未声明）"),
             u"同一目录的索引（%s 的第一张表）与目录里 `ADR-<数字>` 实物的双向对账：索引有 ID 无实物、"
             u"实物不在索引 ID 列" % u" 或 ".join(_INDEX_NAMES),
-            u"状态文件（layout.artifacts.status，当前 %r）正文里的 `WI-<三位以上数字>`，"
-            u"在 %s 下有没有同名开头的文件" % (status or u"（未声明）", work_root),
+            u"状态文件（layout.artifacts.status，当前 %r；声明为目录时取其直接一层、git 跟踪的 *.md，"
+            u"不递归）正文里的 `WI-<三位以上数字>`，在 %s 下有没有同名开头的文件"
+            % (status or u"（未声明）", work_root),
         ],
         "not_covered": [
             u"**两份词表都是工具常量，换一种写法就漏**：日期动作词 %d 个、ADR 修订标记词 %d 个。"
@@ -759,6 +794,36 @@ def selftest():
                 u"实得 %s%s" % (got, (u"；git 准备失败：%s" % err) if err else u""),
                 why=u"D-3：放宽成『前 8 个字符内』时本仓 docs/ 的候选从 10 行涨到 67 行，全是正文句子")
 
+        # 2d/2e：围栏代码块、英文词作普通名词、「修订后」指代句不命中；标题/标签形态仍命中
+        must_hit = [u"## 修订记录", u"修订五：补一段。", u"> **修订：** 改了一句。",
+                    u"补充说明（2026-09-01）", u"## Changelog", u"Revision: 2"]
+        must_miss = [u"```", u"修订：围栏里的样例", u"## Changelog", u"```",
+                     u"~~~sql", u"Revision: 9", u"~~~",
+                     u"revision id `\"0053_x\"`（迁移脚本名）照旧。",
+                     u"修订后的结论见 §13.1。", u"修订后：以新表为准。"]
+        hits = _revision_hits(u"\n".join(must_miss + must_hit))
+        hit_lines = sorted(n for n, _s, _m in hits)
+        want = list(range(len(must_miss) + 1, len(must_miss) + len(must_hit) + 1))
+        _assert(results, hit_lines == want,
+                u"2d 正例 + 2e 反例：围栏代码块内、`revision id …` 叙述行、「修订后」开头的指代句都不得命中；"
+                u"`## 修订记录`、`修订五：`、`> **修订：**`、`补充说明（…）`、`## Changelog`、`Revision: 2` 缺一即失败",
+                u"期望命中行 %s，实得 %s" % (want, [(n, s) for n, s, _m in hits]),
+                why=u"采用项目实测误报：围栏里的样例、英文 revision 作普通名词、「修订后」作指代")
+
+        # 2f/2g/2h：围栏按 CommonMark 开闭（同字符、长度 ≥ 开围栏；行首 ```x``` 是内联不开围栏）；
+        # 表格标签行 `| Revision | 2 |` 仍命中
+        sample = [u"````md", u"```", u"修订：外层围栏里的样例", u"```", u"````",
+                  u"修订六：外层围栏之后的真标记",                       # 第 6 行
+                  u"```x``` 是行内代码，不开围栏",
+                  u"修订七：内联代码之后的真标记",                       # 第 8 行
+                  u"| Revision | 2 |"]                                    # 第 9 行
+        got2 = sorted(n for n, _s, _m in _revision_hits(u"\n".join(sample)))
+        _assert(results, got2 == [6, 8, 9],
+                u"2f/2g/2h：4 反引号外层内嵌 ``` 后的真标记、行首 ```x``` 后的真标记、"
+                u"表格行 `| Revision | 2 |` 都须命中，外层围栏里的样例不得命中",
+                u"期望命中行 [6, 8, 9]，实得 %s" % got2,
+                why=u"CommonMark：闭合围栏须同字符且不短于开围栏；反引号围栏的信息串不得含反引号")
+
         # 3d：「文件」列写裸 ID 而实物叫 ADR-0002-y.md → 不得计入缺实物
         _assert(results, (not err) and _ids(res, "adr-index-missing") == [],
                 u"3d 正例：索引「文件」列写裸 `ADR-0002`，实物叫 `ADR-0002-y.md`，两段式定位须找到它",
@@ -834,4 +899,25 @@ def selftest():
                 u"4a 附带：未声明 layout.work_root 时取常量 %s，证据里须注明用的是默认"
                 % _DEFAULT_WORK_ROOT,
                 u"证据 %r" % (([f for f in res if f["id"] in got] or [{}])[0].get("evidence")))
+
+    # ---- 4d/4e：状态源声明为目录（一件一文件）视为存在；路径不存在仍报 ----
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        _write(os.path.join(tmp, "docs", "items", "a.md"), u"# 甲\n\n- WI-0007 在做。\n")
+        _write(os.path.join(tmp, "docs", "items", "sub", "b.md"), u"- WI-0009 不递归。\n")
+        _write(os.path.join(tmp, "docs", "state", "work", "WI-0007-a.md"), u"# WI-0007\n")
+        err = _git_commit(tmp)
+        cfg = {"_root": tmp, "layout": {"docs_root": "docs", "artifacts": {"status": "docs/items"}}}
+        res = run(cfg) if not err else []
+        got = sorted(f["id"] for f in res if f["id"].startswith((u"drift/status", u"drift/work-item")))
+        _assert(results,
+                (not err) and got == [u"drift/work-item"],
+                u"4d 正例：layout.artifacts.status 指向目录时视为存在，不报 status-missing；"
+                u"ID 取目录下直接一层 *.md（WI-0007 有文件→PASS；子目录里的 WI-0009 不递归、不报）",
+                u"实得 %s%s" % (got, (u"；git 准备失败：%s" % err) if err else u""))
+        cfg = {"_root": tmp, "layout": {"docs_root": "docs", "artifacts": {"status": "docs/nope"}}}
+        res = run(cfg) if not err else []
+        _assert(results,
+                (not err) and _ids(res, "status-missing") == [u"drift/status-missing/docs/nope"],
+                u"4e 反例：layout.artifacts.status 指向的路径文件与目录都不存在，仍须报 status-missing",
+                u"实得 %s" % _ids(res, "status-missing"))
     return results
