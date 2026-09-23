@@ -44,3 +44,4 @@ git subtree pull --prefix=.std https://github.com/Alan-IFT/ai-dev-std.git main -
 | `2026-09-23.5` | `c327387` |
 | `2026-09-23.6` | `a4446b3` |
 | `2026-09-23.7` | `dc6c17b` |
+| `2026-09-23.8` | `3e5f32e` |
