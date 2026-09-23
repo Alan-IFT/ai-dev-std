@@ -1,11 +1,10 @@
 # ai-dev-std
 
-AI 辅助开发的项目管理标准与机械检查器。内容只有三个目录加一个插件清单目录，与维护仓 `main` 上同名目录逐字一致：
+AI 辅助开发的项目管理标准与机械检查器。内容只有三个目录，与维护仓 `main` 上同名目录逐字一致：
 
 - `标准/` 四章正文、覆盖与采用检查、参考资料卡、示例项目
 - `templates/` 载体实例模板
-- `tools/std/` 检查器与契约（`python3 .std/tools/std/check_all.py .`）
-- `.claude-plugin/` Claude Code 插件清单：把内嵌的 `.std/` 当插件加载，接法见 `tools/std/README.md`「Claude Code 拦截层」
+- `tools/std/` 检查器与契约（`python3 .std/tools/std/check_all.py .`）。Claude Code 接法见 `tools/std/README.md`「Claude Code 接法」——拦截层由采用方在自己的 `.claude/settings.json` 写原生权限与钩子配置，本仓不随发任何插件或配置文件。
 
 本仓是发布产物，不在这里修改任何内容。`main` 永远指向最新发布；每个发布提交另打一个 tag，要钉某一版把下面命令里的 `main` 换成 tag 名。
 
@@ -44,3 +43,4 @@ git subtree pull --prefix=.std https://github.com/Alan-IFT/ai-dev-std.git main -
 | `2026-09-23.4` | `a73cec8` |
 | `2026-09-23.5` | `c327387` |
 | `2026-09-23.6` | `a4446b3` |
+| `2026-09-23.7` | `dc6c17b` |
