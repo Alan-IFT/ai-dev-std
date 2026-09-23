@@ -30,13 +30,10 @@ INTERP = re.compile(r"\b(?:python3?|node)\b[^|]*\s-[ce]\b[^|]*(?:\bopen\s*\(|wri
 TAIL = u"不要修改 %s 内的判据；要改标准走合并回标准仓再 pull；未定项按 governance/exceptions.md 逐条登记"
 
 def _rel(target, base):
-    try:    # 跨盘符 relpath 会抛（契约 §4 为此踩过一次），按"不在其下"算，不崩
-        return os.path.relpath(target, base).replace("\\", "/")
-    except ValueError:
-        return ""
+    return os.path.relpath(target, base).replace("\\", "/")
 
 def _norm(path):
-    """反斜杠→正斜杠 + realpath（Windows 上顺带归一盘符与大小写）。"""
+    """反斜杠→正斜杠 + realpath。"""
     if not path:
         return ""
     try:
@@ -248,7 +245,8 @@ def selftest():
     root = _norm(tempfile.mkdtemp(prefix="stdguard-"))
     std, fails, total, G = root + "/.std", [], 0, "git commit -m x"
     try:
-        os.makedirs(std + "/tools/std")   # 只有内嵌目录必须真实存在：大小写归一要靠它
+        os.makedirs(std + "/tools/std")   # 只有内嵌目录必须真实存在：check_all 在位判定要靠这个占位
+        os.symlink(std, root + "/lnk")     # 经符号链接写进内嵌目录：realpath 解析后才判得出
         with io.open(std + "/tools/std/check_all.py", "w", encoding="utf-8") as fh:
             fh.write(u"# 占位\n")
 
@@ -264,6 +262,7 @@ def selftest():
                  (u"Edit settings", ed("Edit", root + "/.claude/settings.json"), "ask"),
                  (u"Notebook 内嵌目录",
                   ed("NotebookEdit", std + "/n.ipynb", "notebook_path"), "deny"),
+                 (u"Write 经符号链接进内嵌目录", ed("Write", root + "/lnk/x.md"), "deny"),
                  (u"假门 退出 0", bs(G, (0, u""))[0], None),
                  (u"假门 退出 1", bs(G, (1, u"结论：有失败。\n"))[0], "deny"),
                  (u"假门 退出 2", bs(G, (2, FAKE2))[0], "deny"),
@@ -275,10 +274,6 @@ def selftest():
                  (u"subtree 带重定向不白名单",
                   bs("git subtree pull --prefix=.std . main > .std/log")[0], "ask"),
                  (u"check_all 不在位记 skip", bs(G, None, root + "/nostd")[3], u"skip")]
-        if os.name == "nt":
-            cases.append((u"Write 大小写 .STD", ed("Write", root + "/.STD/x.md"), "deny"))
-        else:
-            sys.stdout.write(u"跳过「Write 大小写 .STD」：非 Windows，realpath 不归一大小写\n")
         cases += [(u"Bash %s" % t.replace("\n", u"⏎")[:46], bs(t.format(N=".std"))[0], w)
                   for t, w in BASH_CASES]
         cases += [(u"commit? %s" % c,
