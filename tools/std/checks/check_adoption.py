@@ -32,11 +32,12 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 放末尾：不遮住标准库
 
 from stdlib import (  # noqa: E402
-    guard, FAIL, PASS, SKIP, UNDETERMINED,
-    cfg_get, embedded_std_rel, filter_env, finding, is_tailored_out, undetermined_from_exception,
+    read_bytes, read_text, FAIL, PASS, SKIP, UNDETERMINED,
+    cfg_get, embedded_std_rel, filter_env, finding, inside, is_tailored_out, outside_root,
+    unreadable,
 )
 
 NAME = "adoption"
@@ -96,10 +97,9 @@ def _embedded_revision(root, embedded_rel, version):
     """内嵌运行时的一条比对：STANDARD_VERSION 的版本值 vs 内嵌标准 README 的修订号。"""
     readme_rel = "%s/标准/README.md" % embedded_rel
     try:
-        with io.open(guard(root, os.path.join(root, readme_rel)), encoding="utf-8-sig", errors="replace") as fh:
-            m = _EMBED_REV_RE.search(fh.read())
+        m = _EMBED_REV_RE.search(read_text(os.path.join(root, readme_rel), root))
     except OSError as exc:
-        return undetermined_from_exception(NAME, exc, "读 %s" % readme_rel)
+        return unreadable(NAME, readme_rel, exc)
     why = ("01 §8 第一条：项目记录采用的标准版本；01 §4.7『标准升级』行的验收判据："
            "『`STANDARD_VERSION` 与差异记录一致』——记录与内嵌进来的实物不是同一版，就对不上")
     if not m:
@@ -169,7 +169,8 @@ def _embedded_readonly(root, embedded_rel):
         out = _git(root, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty",
                    "--", embedded_rel, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
-        return undetermined_from_exception(NAME, exc, "查 %s 有无改动（git）" % where)
+        return finding(NAME, UNDETERMINED, "查不了 %s 有无改动" % where, where=where, kind="embedded-readonly-unknown",
+                       reason="git status 跑不起来：%s: %s" % (type(exc).__name__, exc), why=why)
     if out.returncode != 0:
         return _unknown(out, "git status")
     lines = [ln for ln in (out.stdout or b"").decode("utf-8", "replace").splitlines() if ln.strip()]
@@ -210,9 +211,13 @@ def scope(cfg):
             "以内嵌方式运行时：内嵌目录下有没有已跟踪文件的改动（git status，含已暂存与未暂存），"
             "有判 FAIL（01 §8 只读）；git 查不了记未定",
             "配置里有没有非空的 compatibility.policy（01 §5.3 必填，不分档），没有判 FAIL",
+            "tailoring 裁掉本检查时，内嵌目录只读与 compatibility.policy 两项不可裁剪、照判，其余记 SKIP",
             "%s 的 permissions.allow 里有没有通配放行项：`Bash`、`Bash(*)`，或命令解释器、脚本运行器、"
-            "包管理器运行命令后面只剩通配（如 `Bash(python3 *)`、`Bash(npm run *)`、`Bash(uv run:*)`），"
-            "以及整类放行 `PowerShell`、`PowerShell(*)`、`Monitor`、`Agent`；有判 FAIL，文件不在记 SKIP"
+            "包管理器运行命令后面只剩通配（如 `Bash(python3 *)`、`Bash(npm run *)`、`Bash(uv run:*)`；"
+            "中间的选项与登记过的带值选项（python -X/-W、node -r/--require/--import/--loader、perl -I、"
+            "npm --prefix、uv --with）跳过再看，运行器后跟解释器同样认，解释器名带版本号如 `python3.12` 同样认），"
+            "以及整类放行 `PowerShell`、`PowerShell(*)`、`Monitor`、`Agent`；有判 FAIL，文件不在记 SKIP；"
+            "通配前出现未登记的选项、其后的词又不像脚本路径时判不了，记未定（wildcard-unsure）"
             % _SETTINGS_REL,
         ],
         "not_covered": [
@@ -250,9 +255,11 @@ def scope(cfg):
 def run(cfg, tool_root=None):
     """tool_root 只为自检注入（同 stdlib.embedded_std_rel），生产路径不传。"""
     tailored, reason = is_tailored_out(cfg, NAME)
-    if tailored:
-        return [finding(NAME, SKIP, "项目已裁剪本检查", reason=reason or "project.yaml 未写理由")]
     root = cfg.get("_root") or "."
+    if tailored:                       # 内嵌目录只读与 compatibility.policy 必填不可裁剪（D-126），照判
+        return ([finding(NAME, SKIP, "项目已裁剪本检查（内嵌目录只读与 compatibility.policy 不可裁剪，照判）",
+                         reason=reason or "project.yaml 未写理由")]
+                + _readonly_findings(root, embedded_std_rel(root, tool_root)) + [_compatibility(cfg)])
     return _version(cfg, root, tool_root) + [_compatibility(cfg)] + _settings_allow(root)
 
 
@@ -261,6 +268,8 @@ def _version(cfg, root, tool_root):
     out = []
     embedded = embedded_std_rel(root, tool_root)
 
+    if not inside(root, path):          # 先护栏：出仓的不探测在不在（R1-07）
+        return [outside_root(NAME, _REL)] + _readonly_findings(root, embedded)
     if not os.path.isfile(path):
         out.append(finding(
             NAME, FAIL, "缺 %s：没有记录采用的是标准的哪一版" % _REL,
@@ -273,10 +282,9 @@ def _version(cfg, root, tool_root):
         return out + _readonly_findings(root, embedded)
 
     try:
-        with io.open(guard(root, path), encoding="utf-8-sig", errors="replace") as fh:
-            text = fh.read()
+        text = read_text(path, root)
     except OSError as exc:
-        return [undetermined_from_exception(NAME, exc, "读 %s" % _REL)] + _readonly_findings(root, embedded)
+        return [unreadable(NAME, _REL, exc)] + _readonly_findings(root, embedded)
 
     version, adopted, pairs = _parse(text)
     raw_head = "；".join(ln.strip() for ln in text.splitlines() if ln.strip())[:200] or "（空文件）"
@@ -374,6 +382,15 @@ _WRAPPERS = {
 # 官方权限文档（2026-09-27 核实）：这些执行包装「不能被前缀规则自动放行」，`Bash(watch *)` 之类在
 # manual 模式下始终询问——规则本身不生效，不算通配放行，整条跳过
 _PROMPT_ALWAYS = frozenset(("watch", "setsid", "ionice", "flock"))
+# 解释器名带版本号（python3.12、node18、lua5.4）按去掉版本号的名字认（B17）
+_VERSION_SUFFIX = re.compile(r"(?<=[a-z])[\d.]+$")
+# 解释器自己的带值选项：值不是脚本，跳过它再看后面还有没有脚本（`python3 -X dev *` 仍是任意代码，B17）
+_INTERP_ARG_OPTS = {"python": ("-X", "-W"), "node": ("-r", "--require", "--import", "--loader"),
+                    "perl": ("-I",)}
+# 其后一词就是要跑的程序（`python3 -m pytest *` 与给了脚本路径同样窄）
+_INTERP_PROG_OPTS = {"python": ("-m",)}
+# 运行器自己的带值选项：跳过它和它的值再对照（`npm --prefix x run *`、`uv run --with x *`）
+_RUNNER_ARG_OPTS = {"npm": ("--prefix",), "uv": ("--with",)}
 _ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 
@@ -404,7 +421,10 @@ def _strip_wrappers(words):
 
 
 def _wildcard_allow(rule):
-    """一条 permissions.allow 是否放行任意代码。返回命中说明或 None。
+    """一条 permissions.allow 是否放行任意代码。返回 (FAIL, 说明)、(UNDETERMINED, 说明) 或 None。
+
+    带值选项按一份登记表认；通配前出现未登记的选项、其后的词又不像脚本路径（不含 `/`、`.`）时，
+    那个词可能只是选项的值、通配才是脚本——判不了，记未定（契约 §1.1），不判 FAIL 也不放过。
 
     语义按 Claude Code 官方权限文档（https://code.claude.com/docs/en/permissions，2026-09-27 核实）：
     `*` 匹配任意文本（含空格）；第一个 `*` 之前的文字按原样匹配；`*` 前的空格是规则的一部分——
@@ -416,9 +436,9 @@ def _wildcard_allow(rule):
     """
     rule = str(rule).strip()
     if rule == "Bash":
-        return "整个 Bash 工具不设范围"
+        return FAIL, "整个 Bash 工具不设范围"
     if rule in _WHOLE_TOOLS:
-        return "%s 整类放行" % rule
+        return FAIL, "%s 整类放行" % rule
     if not (rule.startswith("Bash(") and rule.endswith(")")):
         return None
     inner = rule[5:-1].strip()
@@ -432,44 +452,57 @@ def _wildcard_allow(rule):
     words = [w.strip("\"'") for w in prefix.split()]
     words = [w for w in words if w]
     if not words:
-        return "通配号前没有命令，放行一切命令"
+        return FAIL, "通配号前没有命令，放行一切命令"
     if os.path.basename(words[0]) in _PROMPT_ALWAYS:
         return None                  # 前缀规则对它们本来无效（始终询问），不当通配放行
     words, wrappers = _strip_wrappers(words)
     if not words:
-        return "包装命令 %s 后面是通配，放行其后任意命令" % "、".join(wrappers) if wrappers \
-            else "通配号前只有变量赋值，放行一切命令"
+        return FAIL, ("包装命令 %s 后面是通配，放行其后任意命令" % "、".join(wrappers) if wrappers
+                      else "通配号前只有变量赋值，放行一切命令")
 
     def name_hits(word, names, partial):
         return [n for n in names if (n.startswith(word) if partial else n == word)]
 
+    def scripty(ws):
+        return any("/" in w or "." in w for w in ws)
+
     head = os.path.basename(words[0])
-    if len(words) == 1:
-        interp = name_hits(head, _INTERPRETERS, partial)
-    else:
-        interp = [head] if head in _INTERPRETERS else []
-    if interp and all(w.startswith("-") for w in words[1:]):
-        return "命令解释器 %s 后面是通配" % "/".join(sorted(interp)[:4])
+    base = _VERSION_SUFFIX.sub("", head)
+    interp = name_hits(base, _INTERPRETERS, partial) if len(words) == 1 else [head] * (base in _INTERPRETERS)
+    rest, arg_opts, unknown = list(words[1:]), _INTERP_ARG_OPTS.get(base, ()), None
+    while rest and rest[0].startswith("-"):          # 解释器之后只剩选项（及带值选项的值）即通配
+        if rest[0] in _INTERP_PROG_OPTS.get(base, ()):
+            rest = rest[1:2]                         # -m 模块：其后的模块名就是程序，窄；没有模块名即通配
+            break
+        if rest[0] not in arg_opts and rest[0] != "--":
+            unknown = unknown or rest[0]
+        del rest[:2 if rest[0] in arg_opts else 1]
+    if interp and not rest:
+        return FAIL, "命令解释器 %s 后面是通配" % "/".join(sorted(interp)[:4])
+    if interp and unknown and not scripty(rest):
+        return UNDETERMINED, "命令解释器 %s 带未登记的选项 %s，其后的 %s 可能只是它的值" % (
+            head, unknown, " ".join(rest))
+    # 运行器：剥掉它自己登记过的带值选项，再按非选项词对照（`npx -y *`、`npm run -s *` 与 `npx *` 同样放行任意包）
+    body, run_opts = list(words[1:]), _RUNNER_ARG_OPTS.get(head, ())
+    kept = []
+    while body:
+        if body[0] in run_opts:
+            del body[:2]
+        else:
+            kept.append(body.pop(0))
+    names = [head] + [w for w in kept if not w.startswith("-")]
+    partial = partial and not words[-1].startswith("-")
     for runner in _RUNNERS:
-        if len(runner) < len(words):
-            continue
-        names = [head] + words[1:]
-        if runner[:len(names) - 1] == tuple(names[:-1]) and name_hits(names[-1], [runner[len(names) - 1]], partial):
-            return "运行器 %s 后面是通配" % " ".join(runner[:max(len(words), 1)])
-    return None
-    inner = rule[5:-1].replace(":*", " *").strip()
-    if "*" not in inner:
-        return None
-    words = [w for w in inner.split("*", 1)[0].split() if w]
-    if not words:
-        return "通配号前没有命令，放行一切命令"
-    head = os.path.basename(words[0])
-    if head in _INTERPRETERS and all(w.startswith("-") for w in words[1:]):
-        return "命令解释器 %s 后面是通配" % head
-    names = tuple([head] + words[1:])
-    for runner in _RUNNERS:
-        if runner[:len(names)] == names:
-            return "运行器 %s 后面是通配" % " ".join(runner[:max(len(names), 1)])
+        if len(runner) >= len(names) and runner[:len(names) - 1] == tuple(names[:-1]) \
+                and name_hits(names[-1], [runner[len(names) - 1]], partial):
+            return FAIL, "运行器 %s 后面是通配" % " ".join(runner[:len(names)])
+        if len(names) == len(runner) + 1 and tuple(names[:-1]) == runner and not partial \
+                and _VERSION_SUFFIX.sub("", names[-1]) in _INTERPRETERS:
+            return FAIL, "运行器 %s 后跟命令解释器 %s 再接通配" % (" ".join(runner), names[-1])
+        # 多词运行器（npm run）的动词之前出现未登记选项：那个词可能是选项的值，动词可能就在后面
+        if len(runner) > 1 and names[0] == runner[0] and len(kept) > 1 and kept[0].startswith("-") \
+                and kept[0] != "--" and runner[1] in kept[1:] and not scripty(kept):
+            return UNDETERMINED, "运行器 %s 的动词前有未登记的选项 %s" % (head, kept[0])
     return None
 
 
@@ -477,29 +510,38 @@ def _settings_allow(root):
     why = ("01 §5.5 审批疲劳段的验收：能执行任意代码的通配放行项（整个命令解释器、脚本运行器或包管理器的"
            "运行命令）不作为免审批项保留，只放行窄到具体动作的规则")
     path = os.path.join(root, _SETTINGS_REL)
+    if not inside(root, path):
+        return [outside_root(NAME, _SETTINGS_REL)]
     if not os.path.isfile(path):
         return [finding(
             NAME, SKIP, "没有入库的 %s，免审批清单无从读" % _SETTINGS_REL, kind="settings-absent",
             reason="本检查只读 Claude Code 的项目级共享设置；项目不用它或把清单放在别的宿主里时，"
                    "那份清单本工具不读（见覆盖边界）", why=why)]
     try:
-        with io.open(guard(root, path), encoding="utf-8-sig") as fh:
-            data = json.load(fh)
+        data = json.loads(read_bytes(path, root).decode("utf-8-sig"))
         perms = data.get("permissions") or {}
         allow = perms.get("allow") or []
         if not isinstance(allow, list):
             raise ValueError("permissions.allow 不是列表：%r" % (allow,))
-    except (OSError, ValueError, AttributeError) as exc:
-        return [undetermined_from_exception(NAME, exc, "读 %s 的 permissions" % _SETTINGS_REL)]
+    except OSError as exc:
+        return [unreadable(NAME, _SETTINGS_REL, exc)]
+    except (ValueError, AttributeError, RecursionError) as exc:   # 深嵌套 JSON 抛 RecursionError
+        return [finding(NAME, UNDETERMINED, "%s 的 permissions 解析不了" % _SETTINGS_REL, where=_SETTINGS_REL,
+                        kind="settings-invalid", reason="%s: %s" % (type(exc).__name__, exc), why=why)]
     out = []
     for rule in allow:
         hit = _wildcard_allow(rule)
-        if hit:
+        if hit and hit[0] == FAIL:
             out.append(finding(
                 NAME, FAIL, "免审批清单里有通配放行项：%s" % rule, where=_SETTINGS_REL,
                 kind="wildcard-allow", key=str(rule), why=why,
                 reason="%s；改成窄到具体动作的规则（如 `Bash(python3 tools/std/check_all.py *)`），"
-                       "或移出清单" % hit))
+                       "或移出清单" % hit[1]))
+        elif hit:
+            out.append(finding(
+                NAME, UNDETERMINED, "免审批清单里有判不了是否通配的放行项：%s" % rule, where=_SETTINGS_REL,
+                kind="wildcard-unsure", key=str(rule), why=why,
+                reason="%s；改成不带该选项的窄规则，或确认后在 exceptions.md 登记（契约 §9）" % hit[1]))
     if not out:
         out.append(finding(
             NAME, PASS, "%s 的免审批清单里没有通配放行项" % _SETTINGS_REL, where=_SETTINGS_REL,
@@ -661,6 +703,9 @@ def _readonly_selftest():
                 else:
                     os.environ["GIT_CEILING_DIRECTORIES"] = saved
 
+            # 裁掉本检查（tailoring）时只读守卫与 compatibility.policy 照判：修前整条只剩一条 SKIP
+            tail = run(dict(cfg, tailoring=[{"check": NAME, "applicable": False, "reason": u"自检"}]), tool_root=tr)
+            tailored = sorted((f["status"], f["id"]) for f in tail if f["status"] != SKIP)
             fail = [f for f in dirty_fs if f["id"] == "adoption/embedded-modified"]
             ok = (len(clean) == 1 and clean[0][0] == PASS
                   and untracked == clean
@@ -670,13 +715,17 @@ def _readonly_selftest():
                   and "只读" in fail[0]["title"]
                   and ignored == [(UNDETERMINED, "adoption/embedded-untracked")]
                   and outside["status"] == UNDETERMINED
-                  and outside["id"] == "adoption/embedded-readonly-unknown")
+                  and outside["id"] == "adoption/embedded-readonly-unknown"
+                  and tailored == [(FAIL, "adoption/compatibility-policy"), (FAIL, "adoption/embedded-modified")]
+                  and sum(f["status"] == SKIP for f in tail) == 1)
             return finding(
                 NAME, PASS if ok else FAIL,
                 "内嵌目录只读（经 run() 注入内嵌）：未暂存或已暂存改动 FAIL embedded-modified、"
-                "干净与仅未跟踪 PASS、被忽略记未定 embedded-untracked、不在 git 仓库记未定",
-                evidence="干净 %s；仅未跟踪 %s；未暂存 %s；已暂存 %s；被忽略 %s；非 git %s"
-                         % (clean, untracked, dirty, staged, ignored, (outside["status"], outside["id"])),
+                "干净与仅未跟踪 PASS、被忽略记未定 embedded-untracked、不在 git 仓库记未定；"
+                "裁掉本检查时只读守卫与 compatibility.policy 照判 FAIL，其余只剩一条 SKIP",
+                evidence="干净 %s；仅未跟踪 %s；未暂存 %s；已暂存 %s；被忽略 %s；非 git %s；裁剪 %s"
+                         % (clean, untracked, dirty, staged, ignored, (outside["status"], outside["id"]),
+                            [(f["status"], f["id"]) for f in tail]),
                 why="01 §8：内嵌的 `.std/` 只读；契约 §3 静默失效探测")
     except Exception as exc:  # noqa: BLE001
         return finding(NAME, FAIL, "内嵌目录只读的自检跑不起来",
@@ -694,13 +743,24 @@ def _declarations_selftest(tmp):
             # D-123：`*` 紧贴按名字前缀、引号剥掉、包装命令与变量赋值剥掉再看（官方语义，见 _wildcard_allow）
             "Bash(py*)", "Bash(p*)", "Bash(ba*)", 'Bash(sh -c "*")', "Bash(bash -c '*')", "Bash(env X=1 *)",
             "Bash(sudo -u root *)", "Bash(command bash *)", "Bash(npm r*)", "Bash(timeout 30 python3 *)",
-            "Bash(env -i *)", "Bash(env -u X python3 *)", "Bash(nice -n 5 bash *)"]
+            "Bash(env -i *)", "Bash(env -u X python3 *)", "Bash(nice -n 5 bash *)",
+            # B17：选项跟在运行器后、解释器名带版本号、解释器带值选项
+            "Bash(npx -y *)", "Bash(npm run -s *)", "Bash(python3.12 *)", "Bash(python3 -X dev *)",
+            # R1-08：带值选项补登记、运行器后跟解释器
+            "Bash(perl -I lib *)", "Bash(node --loader x *)", "Bash(uv run --with x *)",
+            "Bash(npm --prefix x run *)", "Bash(uv run python *)", "Bash(python3 -m *)"]
+    # R1-08：通配前有未登记选项、其后的词不像脚本路径——判不了，记未定
+    unsure = ["Bash(ruby -r x *)", "Bash(bash -o posix *)", "Bash(bash --rcfile x *)",
+              "Bash(node --env-file x *)", "Bash(npm --foo x run *)"]
     narrow = ["Read", "Edit", "Bash(git status)", "Bash(npm run test)", "Bash(npm run test:*)",
               "Bash(python3 tools/std/check_all.py *)", "Bash(bash scripts/verify_all.sh:*)", "Bash(git add:*)",
               "mcp__x__y", "Bash(python3)", "Agent(std-reviewer)", "PowerShell(Get-ChildItem *)",
               "Bash(ls*)", "Bash(git log *)", "Bash(npm test *)", "Bash(command -v python3)",
-            "Bash(env -i ls *)", "Bash(sudo -i ls *)", "Bash(setsid *)", "Bash(watch *)", "Bash(flock x *)"]
-    missed = [r for r in wild if not _wildcard_allow(r)]
+            "Bash(env -i ls *)", "Bash(sudo -i ls *)", "Bash(setsid *)", "Bash(watch *)", "Bash(flock x *)",
+            "Bash(python3.12 tools/x.py *)", "Bash(python3 -X dev tools/x.py *)", "Bash(python3 -m pytest *)",
+            "Bash(npx -y prettier --check *)"]
+    missed = [r for r in wild if (_wildcard_allow(r) or (None,))[0] != FAIL]
+    missed += [r for r in unsure if (_wildcard_allow(r) or (None,))[0] != UNDETERMINED]
     false_hit = [r for r in narrow if _wildcard_allow(r)]
     sdir = os.path.join(tmp, ".claude")
     os.makedirs(sdir, exist_ok=True)
@@ -719,12 +779,12 @@ def _declarations_selftest(tmp):
     ok = (compat == [FAIL, FAIL, FAIL, PASS, PASS] and not missed and not false_hit
           and bad == [(FAIL, "adoption/wildcard-allow/Bash(python3_*)")]
           and good == [(PASS, "adoption/no-wildcard-allow")]
-          and [x[0] for x in broken] == [UNDETERMINED]
+          and broken == [(UNDETERMINED, "adoption/settings-invalid")]
           and [f["id"] for f in absent] == ["adoption/settings-absent"] and absent[0]["status"] == SKIP)
     return finding(
         NAME, PASS if ok else FAIL,
         "compatibility.policy 缺或空判 FAIL、有值 PASS；免审批清单通配放行判 FAIL、窄规则 PASS、"
-        "坏 JSON 记未定、无文件 SKIP",
+        "坏 JSON 记未定 settings-invalid（配置错误，可登记，不是 internal-error）、无文件 SKIP",
         evidence="compat %s；漏报 %s；误报 %s；反例 %s；正例 %s；坏文件 %s；无文件 %s"
                  % (compat, missed, false_hit, bad, good, broken, [f["status"] for f in absent]),
         why="01 §5.3 compatibility.policy 必填；01 §5.5 通配放行项不作为免审批项保留；契约 §3")
