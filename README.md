@@ -1,10 +1,11 @@
 # ai-dev-std
 
-AI 辅助开发的项目管理标准与机械检查器。内容只有三个目录，与维护仓 `main` 上同名目录逐字一致：
+AI 辅助开发的项目管理标准与机械检查器。**受支持的宿主是 DeepSeek Harness（DSH）**（Claude Code 自 2026-10-05 起不再支持）。内容只有四个目录，与维护仓 `main` 上同名目录逐字一致：
 
 - `标准/` 四章正文、覆盖与采用检查、参考资料卡、示例项目
-- `templates/` 载体实例模板
-- `tools/std/` 检查器与契约（`python3 .std/tools/std/check_all.py .`）。Claude Code 接法见 `tools/std/README.md`「Claude Code 接法」——拦截层由采用方在自己的 `.claude/settings.json` 写原生权限与钩子配置，本仓不随发任何插件或配置文件。
+- `templates/` 载体实例模板（含收工交接 `std-handoff` 与独立审查 `std-reviewer` 两份 DSH skill）
+- `tools/std/` 检查器与契约（`python .std/tools/std/check_all.py .`）。DSH 接法见 `tools/std/README.md`「DSH 接法」。
+- `tools/dsh-std/` DeepSeek Harness 原生插件：受控动作询问（`reset --hard`、强推、打 tag、推公开仓等）与内嵌目录 `.std/` 只读。装进 DSH profile 的 `dsh.profile.bundles`，装法、判定规则与**已知盲区**见该目录 README。它是执行层的一种形态，**不是安全边界**。
 
 本仓是发布产物，不在这里修改任何内容。`main` 永远指向最新发布；每个发布提交另打一个 tag，要钉某一版把下面命令里的 `main` 换成 tag 名。
 
@@ -22,7 +23,7 @@ git subtree pull --prefix=.std https://github.com/Alan-IFT/ai-dev-std.git main -
 
 拉到的是哪一版：`.std/标准/README.md` 第 3 行的修订号，写进项目的 `governance/STANDARD_VERSION`。升级前的越界检测与读差异步骤见 `tools/std/README.md` 「接入一个项目」。
 
-**许可**：`标准/`、`templates/` 为 CC BY 4.0（`LICENSE-DOCS`），`tools/std/` 及代码为 MIT（`LICENSE`）。引用的第三方材料版权归原作者。
+**许可**：`标准/`、`templates/` 为 CC BY 4.0（`LICENSE-DOCS`），`tools/std/`、`tools/dsh-std/` 及代码为 MIT（`LICENSE`）。引用的第三方材料版权归原作者。
 
 | tag | 来自 main |
 |---|---|
@@ -60,3 +61,4 @@ git subtree pull --prefix=.std https://github.com/Alan-IFT/ai-dev-std.git main -
 | `2026-09-30.3` | `0b79e1b` |
 | `2026-09-30.4` | `307156a` |
 | `2026-09-30.5` | `5a20784` |
+| `2026-10-05` | `56f79e3`（只支持 DeepSeek Harness；新增 `tools/dsh-std` 插件） |
