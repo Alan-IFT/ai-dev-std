@@ -4,7 +4,7 @@ AI 辅助开发的项目管理标准与机械检查器。**受支持的宿主是
 
 - `标准/` 四章正文、覆盖与采用检查、参考资料卡、示例项目
 - `templates/` 载体实例模板（含收工交接 `std-handoff` 与独立审查 `std-reviewer` 两份 DSH skill）
-- `tools/std/` 检查器与契约（`python .std/tools/std/check_all.py .`）。DSH 接法见 `tools/std/README.md`「DSH 接法」。
+- `tools/std/` 检查器与契约（`python .std/tools/std/check_all.py .`）。DSH 接法见 `tools/std/README.md`「DSH 接法」，以及提交钩子选 Python 的公共写法 `pick-python.sh`（Windows 上写死 `python3` 的钩子会拒绝一切提交，见 `tools/std/README.md` 的钩子形态示意）。
 - `tools/dsh-std/` DeepSeek Harness 原生插件：受控动作询问（`reset --hard`、强推、打 tag、推公开仓等）与内嵌目录 `.std/` 只读。装进 DSH profile 的 `dsh.profile.bundles`，装法、判定规则与**已知盲区**见该目录 README。它是执行层的一种形态，**不是安全边界**。
 
 本仓是发布产物，不在这里修改任何内容。`main` 永远指向最新发布；每个发布提交另打一个 tag，要钉某一版把下面命令里的 `main` 换成 tag 名。
@@ -62,3 +62,4 @@ git subtree pull --prefix=.std https://github.com/Alan-IFT/ai-dev-std.git main -
 | `2026-09-30.4` | `307156a` |
 | `2026-09-30.5` | `5a20784` |
 | `2026-10-05` | `56f79e3`（只支持 DeepSeek Harness；新增 `tools/dsh-std` 插件） |
+| `2026-10-05.1` | `7138563`（新增 `tools/std/pick-python.sh` 公共写法；`tools/dsh-std` 两处误报修复与测试修正） |
